@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>今日のToDo</title>
+<style>
+  :root { --green:#06c755; --line:#e6e6e6; --muted:#9a9a9a; --text:#111; --bg:#f6f6f6; --card:#fff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,"Hiragino Sans","Hiragino Kaku Gothic ProN",sans-serif; background:var(--bg); color:var(--text); -webkit-tap-highlight-color:transparent; }
+  header { position:sticky; top:0; z-index:2; background:var(--card); padding:12px 16px 10px; border-bottom:1px solid var(--line); }
+  h1 { font-size:17px; margin:0; }
+  .sub { font-size:12px; color:var(--muted); margin-top:3px; }
+  .bar { height:6px; background:#eee; border-radius:3px; margin-top:8px; overflow:hidden; }
+  .bar i { display:block; height:100%; width:0; background:var(--green); transition:width .2s; }
+  main { padding:6px 12px 110px; }
+  .g { font-size:13px; font-weight:bold; color:var(--green); margin:16px 2px 4px; }
+  .row { display:flex; align-items:center; min-height:44px; padding:6px 8px; margin:2px 0; border-radius:8px; background:var(--card); user-select:none; }
+  .row:active { background:#eef8f0; }
+  .el { width:12px; flex:0 0 auto; color:#c4c4c4; font-size:14px; text-align:center; }
+  .no { width:18px; flex:0 0 auto; font-size:11px; color:var(--muted); text-align:right; margin-right:4px; }
+  .box { width:22px; height:22px; flex:0 0 auto; border:2px solid #c2c2c2; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:15px; color:#fff; margin-right:8px; }
+  .t { font-size:15px; line-height:1.35; }
+  .parent .t { font-weight:bold; }
+  .row.on .box { background:var(--green); border-color:var(--green); }
+  .row.was .t { color:#aaa; text-decoration:line-through; }
+  .row.was .box { background:#bdbdbd; border-color:#bdbdbd; }
+  .row.undo .t { color:#d33; text-decoration:none; }
+  .row.undo .box { background:#fff; border-color:#d33; color:#d33; }
+  footer { position:fixed; left:0; right:0; bottom:0; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid var(--line); }
+  button { width:100%; height:50px; border:0; border-radius:10px; background:var(--green); color:#fff; font-size:17px; font-weight:bold; }
+  button:disabled { background:#cfcfcf; }
+  .msg { text-align:center; color:var(--muted); font-size:14px; padding:40px 0; }
+  .test { background:#fff4d6; color:#8a6d00; font-size:12px; padding:6px 10px; border-radius:6px; margin-top:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>今日のToDo</h1>
+  <div class="sub"><span id="cnt">読み込み中…</span>　押すとチェック。最後に下のボタンでまとめて完了</div>
+  <div class="bar"><i id="bar"></i></div>
+  <div id="test" class="test" style="display:none">テスト（架空の一覧）です。Addnessには反映しません</div>
+</header>
+<main id="list"><div class="msg">読み込み中…</div></main>
+<footer><button id="send" disabled>チェックしてください</button></footer>
+
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+// 設定（GASのWebアプリのURL。LINEのWebhookと同じ）
+var GAS_URL = "https://script.google.com/macros/s/AKfycbw6LLl5POiqRv8iqt0t25kXawC4TOEKqDeL0QdXJ_cMTvmIxCF1H46lrtRL6uEI5g-5/exec";
+var LIFF_ID = "__LIFF_ID__";
+
+var rows = [], pick = {};   // pick[no] = "done"（新しく完了）／"undo"（取り消し）
+var params = new URLSearchParams(location.search);
+var KEY = params.get("k") || "";
+
+function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+
+function draw() {
+  var h = "";
+  rows.forEach(function (r, i) {
+    if (r.level === 0) { h += '<div class="g">■ ' + esc(r.title) + '</div>'; return; }
+    var parent = i + 1 < rows.length && rows[i + 1].level > r.level;
+    var p = pick[r.no];
+    var cls = "row" + (parent ? " parent" : "") + (r.done && p !== "undo" ? " was" : "") + (p === "done" ? " on" : "") + (p === "undo" ? " undo" : "");
+    var indent = r.level > 1 ? (20 + (r.level - 2) * 32) : 0;
+    var mark = p === "done" ? "✓" : (p === "undo" ? "↩" : (r.done ? "✓" : ""));
+    h += '<div class="' + cls + '" data-no="' + r.no + '" style="padding-left:' + (8 + indent) + 'px">' +
+         (r.level > 1 ? '<span class="el">└</span>' : '') +
+         '<span class="no">' + r.no + '</span><span class="box">' + mark + '</span><span class="t">' + esc(r.title) + '</span></div>';
+  });
+  document.getElementById("list").innerHTML = h || '<div class="msg">今日のToDoはありません</div>';
+  var items = rows.filter(function (r) { return r.level > 0; });
+  var done = items.filter(function (r) { return (r.done && pick[r.no] !== "undo") || pick[r.no] === "done"; }).length;
+  document.getElementById("cnt").textContent = done + " / " + items.length + " 完了";
+  document.getElementById("bar").style.width = (items.length ? done * 100 / items.length : 0) + "%";
+  var nd = Object.keys(pick).filter(function (k) { return pick[k] === "done"; }).length;
+  var nu = Object.keys(pick).filter(function (k) { return pick[k] === "undo"; }).length;
+  var b = document.getElementById("send");
+  b.disabled = !(nd || nu);
+  b.textContent = (nd || nu) ? ("✅ まとめて完了（" + nd + "件）" + (nu ? "・取り消し " + nu + "件" : "")) : "チェックしてください";
+}
+
+document.getElementById("list").addEventListener("click", function (ev) {
+  var el = ev.target.closest(".row"); if (!el) return;
+  var no = Number(el.dataset.no);
+  var r = rows.filter(function (x) { return x.no === no; })[0]; if (!r) return;
+  if (pick[no]) delete pick[no];
+  else pick[no] = r.done ? "undo" : "done";
+  draw();
+});
+
+document.getElementById("send").addEventListener("click", function () {
+  var d = Object.keys(pick).filter(function (k) { return pick[k] === "done"; }).map(Number).sort(function (a, b) { return a - b; });
+  var u = Object.keys(pick).filter(function (k) { return pick[k] === "undo"; }).map(Number).sort(function (a, b) { return a - b; });
+  var msgs = [];
+  if (d.length) msgs.push({ type: "text", text: "✅ " + d.join(" ") });
+  if (u.length) msgs.push({ type: "text", text: "取り消し " + u.join(" ") });
+  var b = document.getElementById("send"); b.disabled = true; b.textContent = "送信中…";
+  liff.sendMessages(msgs).then(function () { liff.closeWindow(); }).catch(function (e) {
+    b.disabled = false; b.textContent = "送れませんでした。もう一度押してください";
+    alert("送れませんでした：" + (e && e.message || e));
+  });
+});
+
+function load() {
+  // 前回の一覧をすぐ出して、裏で最新に差し替える
+  try { var c = JSON.parse(localStorage.getItem("todo_cache") || "null"); if (c && c.rows) { rows = c.rows; document.getElementById("test").style.display = c.test ? "block" : "none"; draw(); } } catch (e) {}
+  fetch(GAS_URL + "?json=1&k=" + encodeURIComponent(KEY)).then(function (r) { return r.json(); }).then(function (j) {
+    if (!j.ok) { document.getElementById("list").innerHTML = '<div class="msg">一覧を読めませんでした（' + esc(j.error) + '）</div>'; return; }
+    rows = j.rows; pick = {};
+    document.getElementById("test").style.display = j.test ? "block" : "none";
+    try { localStorage.setItem("todo_cache", JSON.stringify(j)); } catch (e) {}
+    draw();
+  }).catch(function (e) {
+    if (!rows.length) document.getElementById("list").innerHTML = '<div class="msg">一覧を読めませんでした。閉じて開き直してください</div>';
+  });
+}
+
+liff.init({ liffId: LIFF_ID }).then(function () {
+  params = new URLSearchParams(location.search);
+  KEY = params.get("k") || KEY;
+  load();
+}).catch(function (e) {
+  load();
+});
+</script>
+</body>
+</html>
