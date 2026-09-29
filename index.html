@@ -53,9 +53,17 @@
 var GAS_URL = "https://script.google.com/macros/s/AKfycbw6LLl5POiqRv8iqt0t25kXawC4TOEKqDeL0QdXJ_cMTvmIxCF1H46lrtRL6uEI5g-5/exec";
 var LIFF_ID = "2011773385-8gISHTwG";
 
-var LIFF_VERSION = 2;       // 2026-09-29 古い一覧のままチェック・送信できないようにした
-var rows = [], pick = {};   // pick[no] = "done"（新しく完了）／"undo"（取り消し）
-var fresh = false;         // 最新の一覧を読めたか。読めるまではチェックも送信もできない
+var LIFF_VERSION = 3;       // 2026-09-29 開いてすぐチェックできる。送るときに一覧の印を付け、古ければボットが反映しない
+var rows = [], pick = {};   // pick[タスクのID] = "done"（新しく完了）／"undo"（取り消し）。番号が変わっても同じタスクを指す
+var fresh = false;         // 最新の一覧を読めたか（表示用）
+
+// 一覧の印＝並んでいるタスクのIDから作る短い英数字（ボットの listSig_ と同じ計算）
+function listSig(rs) {
+  var s = rs.filter(function (r) { return r.level > 0; }).map(function (r) { return r.id; }).join(",");
+  var h = 5381;
+  for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36).slice(-5);
+}
 var params = new URLSearchParams(location.search);
 var KEY = params.get("k") || "";
 
@@ -66,43 +74,44 @@ function draw() {
   rows.forEach(function (r, i) {
     if (r.level === 0) { h += '<div class="g">■ ' + esc(r.title) + '</div>'; return; }
     var parent = i + 1 < rows.length && rows[i + 1].level > r.level;
-    var p = pick[r.no];
+    var p = pick[r.id];
     var cls = "row" + (parent ? " parent" : "") + (r.done && p !== "undo" ? " was" : "") + (p === "done" ? " on" : "") + (p === "undo" ? " undo" : "");
     var indent = r.level > 1 ? (20 + (r.level - 2) * 32) : 0;
     var mark = p === "done" ? "✓" : (p === "undo" ? "↩" : (r.done ? "✓" : ""));
-    h += '<div class="' + cls + '" data-no="' + r.no + '" style="padding-left:' + (8 + indent) + 'px">' +
+    h += '<div class="' + cls + '" data-id="' + esc(r.id) + '" style="padding-left:' + (8 + indent) + 'px">' +
          (r.level > 1 ? '<span class="el">└</span>' : '') +
          '<span class="no">' + r.no + '</span><span class="box">' + mark + '</span><span class="t">' + esc(r.title) + '</span></div>';
   });
   document.getElementById("list").innerHTML = h || '<div class="msg">今日のToDoはありません</div>';
   var items = rows.filter(function (r) { return r.level > 0; });
-  var done = items.filter(function (r) { return (r.done && pick[r.no] !== "undo") || pick[r.no] === "done"; }).length;
+  var done = items.filter(function (r) { return (r.done && pick[r.id] !== "undo") || pick[r.id] === "done"; }).length;
   document.getElementById("cnt").textContent = done + " / " + items.length + " 完了";
   document.getElementById("bar").style.width = (items.length ? done * 100 / items.length : 0) + "%";
   var nd = Object.keys(pick).filter(function (k) { return pick[k] === "done"; }).length;
   var nu = Object.keys(pick).filter(function (k) { return pick[k] === "undo"; }).length;
   var b = document.getElementById("send");
-  b.disabled = !fresh || !(nd || nu);
-  b.textContent = !fresh ? "最新の一覧を読み込み中…" : ((nd || nu) ? ("✅ まとめて完了（" + nd + "件）" + (nu ? "・取り消し " + nu + "件" : "")) : "チェックしてください");
+  b.disabled = !(nd || nu);
+  b.textContent = (nd || nu) ? ("✅ まとめて完了（" + nd + "件）" + (nu ? "・取り消し " + nu + "件" : "")) : "チェックしてください";
 }
 
 document.getElementById("list").addEventListener("click", function (ev) {
-  if (!fresh) return;
   var el = ev.target.closest(".row"); if (!el) return;
-  var no = Number(el.dataset.no);
-  var r = rows.filter(function (x) { return x.no === no; })[0]; if (!r) return;
-  if (pick[no]) delete pick[no];
-  else pick[no] = r.done ? "undo" : "done";
+  var id = el.dataset.id;
+  var r = rows.filter(function (x) { return x.id === id; })[0]; if (!r) return;
+  if (pick[id]) delete pick[id];
+  else pick[id] = r.done ? "undo" : "done";
   draw();
 });
 
 document.getElementById("send").addEventListener("click", function () {
-  if (!fresh) return;
-  var d = Object.keys(pick).filter(function (k) { return pick[k] === "done"; }).map(Number).sort(function (a, b) { return a - b; });
-  var u = Object.keys(pick).filter(function (k) { return pick[k] === "undo"; }).map(Number).sort(function (a, b) { return a - b; });
+  // 送るのは今画面に出ている一覧の番号＋一覧の印。ボットの一覧と印が違えば、ボットは反映せずに知らせる
+  var byId = {}; rows.forEach(function (r) { if (r.level > 0) byId[r.id] = r; });
+  var nos = function (kind) { return Object.keys(pick).filter(function (k) { return pick[k] === kind && byId[k]; }).map(function (k) { return byId[k].no; }).sort(function (a, b) { return a - b; }); };
+  var d = nos("done"), u = nos("undo");
+  var tag = "\n#" + listSig(rows);
   var msgs = [];
-  if (d.length) msgs.push({ type: "text", text: "✅ " + d.join(" ") });
-  if (u.length) msgs.push({ type: "text", text: "取り消し " + u.join(" ") });
+  if (d.length) msgs.push({ type: "text", text: "✅ " + d.join(" ") + tag });
+  if (u.length) msgs.push({ type: "text", text: "取り消し " + u.join(" ") + tag });
   var b = document.getElementById("send"); b.disabled = true; b.textContent = "送信中…";
   liff.sendMessages(msgs).then(function () { liff.closeWindow(); }).catch(function (e) {
     b.disabled = false; b.textContent = "送れませんでした。もう一度押してください";
@@ -121,7 +130,7 @@ function banner(text, withRetry) {
 // 毎回新しく取る（前の返事を使い回さない）。20秒で打ち切り、3回まで試す
 function fetchList(attempt) {
   var ctl = window.AbortController ? new AbortController() : null;
-  var timer = ctl ? setTimeout(function () { ctl.abort(); }, 20000) : null;
+  var timer = ctl ? setTimeout(function () { ctl.abort(); }, 40000) : null;
   return fetch(GAS_URL + "?json=1&k=" + encodeURIComponent(KEY) + "&t=" + Date.now(), { cache: "no-store", signal: ctl ? ctl.signal : undefined })
     .then(function (r) { if (timer) clearTimeout(timer); return r.json(); })
     .catch(function (e) {
@@ -133,22 +142,23 @@ function fetchList(attempt) {
 
 function load() {
   fresh = false;
-  // 前回の一覧は、最新を読み込むまでの間だけ薄く見せる。チェックも送信もできない
-  //（古い一覧の番号で送ると、別のタスクを完了にしてしまうため・2026-09-29）
-  try { var c = JSON.parse(localStorage.getItem("todo_cache") || "null"); if (c && c.rows) { rows = c.rows; pick = {}; } } catch (e) {}
-  document.getElementById("list").classList.add("stale");
+  // 前回の一覧をすぐ出して、そのままチェックできる。裏で最新を取り直す
+  try { var c = JSON.parse(localStorage.getItem("todo_cache") || "null"); if (c && c.rows && !rows.length) rows = c.rows; } catch (e) {}
   if (rows.length) draw();
-  banner(rows.length ? "前回開いたときの一覧です。最新を読み込み中…（読み込むまでチェックできません）" : "");
+  banner(rows.length ? "最新の一覧を確認中…（このままチェックして送れます）" : "");
   fetchList(1).then(function (j) {
     if (!j.ok) { banner("一覧を読めませんでした（" + (j.error || "") + "）", true); return; }
-    rows = j.rows; pick = {}; fresh = true;
+    var changed = rows.length && listSig(j.rows) !== listSig(rows);
+    rows = j.rows; fresh = true;
+    // 選んだものは、同じタスクなら残す（番号が変わっても）。もう反映済みの選択は外す
+    var byId = {}; rows.forEach(function (r) { if (r.level > 0) byId[r.id] = r; });
+    Object.keys(pick).forEach(function (k) { if (!byId[k] || (pick[k] === "done") === !!byId[k].done) delete pick[k]; });
     document.getElementById("test").style.display = j.test ? "block" : "none";
     try { localStorage.setItem("todo_cache", JSON.stringify(j)); } catch (e) {}
-    document.getElementById("list").classList.remove("stale");
-    banner("");
+    banner(changed ? "一覧が新しくなりました（番号が変わっています）" : "");
     draw();
   }).catch(function () {
-    banner("最新の一覧を読めませんでした。電波のよい所で、もう一度読み込んでください", true);
+    banner(rows.length ? "最新を確認できませんでした。このまま送れます（一覧が古ければ反映せずにお知らせします）" : "一覧を読めませんでした。電波のよい所で、もう一度読み込んでください", true);
     if (!rows.length) document.getElementById("list").innerHTML = '<div class="msg">一覧を読めませんでした</div>';
   });
 }
