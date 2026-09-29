@@ -53,17 +53,20 @@
 var GAS_URL = "https://script.google.com/macros/s/AKfycbw6LLl5POiqRv8iqt0t25kXawC4TOEKqDeL0QdXJ_cMTvmIxCF1H46lrtRL6uEI5g-5/exec";
 var LIFF_ID = "2011773385-8gISHTwG";
 
-var LIFF_VERSION = 3;       // 2026-09-29 開いてすぐチェックできる。送るときに一覧の印を付け、古ければボットが反映しない
+var LIFF_VERSION = 4;       // 2026-09-29 開いてすぐチェックできる。送るときに一覧の印を付け、古ければボットが反映しない
 var rows = [], pick = {};   // pick[タスクのID] = "done"（新しく完了）／"undo"（取り消し）。番号が変わっても同じタスクを指す
 var fresh = false;         // 最新の一覧を読めたか（表示用）
 
-// 一覧の印＝並んでいるタスクのIDから作る短い英数字（ボットの listSig_ と同じ計算）
+// 一覧の印＝並んでいる「番号:題名」から作る短い英数字（ボットの listSig_ と同じ計算）。IDの無い前回の一覧でも同じ印になる
 function listSig(rs) {
-  var s = rs.filter(function (r) { return r.level > 0; }).map(function (r) { return r.id; }).join(",");
+  var s = rs.filter(function (r) { return r.level > 0; }).map(function (r) { return r.no + ":" + r.title; }).join("|");
   var h = 5381;
   for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
   return h.toString(36).slice(-5);
 }
+// 選んだものを覚える鍵＝タスクのID。IDが入っていない前回の一覧（v4.8まで）でも押せるように、そのときは番号を使う
+//（番号の鍵で送っても、一覧の印が合わなければボットは反映しない＝取り違えは起きない）
+function rkey(r) { return r.id || ("no" + r.no); }
 var params = new URLSearchParams(location.search);
 var KEY = params.get("k") || "";
 
@@ -74,17 +77,17 @@ function draw() {
   rows.forEach(function (r, i) {
     if (r.level === 0) { h += '<div class="g">■ ' + esc(r.title) + '</div>'; return; }
     var parent = i + 1 < rows.length && rows[i + 1].level > r.level;
-    var p = pick[r.id];
+    var p = pick[rkey(r)];
     var cls = "row" + (parent ? " parent" : "") + (r.done && p !== "undo" ? " was" : "") + (p === "done" ? " on" : "") + (p === "undo" ? " undo" : "");
     var indent = r.level > 1 ? (20 + (r.level - 2) * 32) : 0;
     var mark = p === "done" ? "✓" : (p === "undo" ? "↩" : (r.done ? "✓" : ""));
-    h += '<div class="' + cls + '" data-id="' + esc(r.id) + '" style="padding-left:' + (8 + indent) + 'px">' +
+    h += '<div class="' + cls + '" data-id="' + esc(rkey(r)) + '" style="padding-left:' + (8 + indent) + 'px">' +
          (r.level > 1 ? '<span class="el">└</span>' : '') +
          '<span class="no">' + r.no + '</span><span class="box">' + mark + '</span><span class="t">' + esc(r.title) + '</span></div>';
   });
   document.getElementById("list").innerHTML = h || '<div class="msg">今日のToDoはありません</div>';
   var items = rows.filter(function (r) { return r.level > 0; });
-  var done = items.filter(function (r) { return (r.done && pick[r.id] !== "undo") || pick[r.id] === "done"; }).length;
+  var done = items.filter(function (r) { return (r.done && pick[rkey(r)] !== "undo") || pick[rkey(r)] === "done"; }).length;
   document.getElementById("cnt").textContent = done + " / " + items.length + " 完了";
   document.getElementById("bar").style.width = (items.length ? done * 100 / items.length : 0) + "%";
   var nd = Object.keys(pick).filter(function (k) { return pick[k] === "done"; }).length;
@@ -97,7 +100,7 @@ function draw() {
 document.getElementById("list").addEventListener("click", function (ev) {
   var el = ev.target.closest(".row"); if (!el) return;
   var id = el.dataset.id;
-  var r = rows.filter(function (x) { return x.id === id; })[0]; if (!r) return;
+  var r = rows.filter(function (x) { return x.level > 0 && rkey(x) === id; })[0]; if (!r) return;
   if (pick[id]) delete pick[id];
   else pick[id] = r.done ? "undo" : "done";
   draw();
@@ -105,7 +108,7 @@ document.getElementById("list").addEventListener("click", function (ev) {
 
 document.getElementById("send").addEventListener("click", function () {
   // 送るのは今画面に出ている一覧の番号＋一覧の印。ボットの一覧と印が違えば、ボットは反映せずに知らせる
-  var byId = {}; rows.forEach(function (r) { if (r.level > 0) byId[r.id] = r; });
+  var byId = {}; rows.forEach(function (r) { if (r.level > 0) byId[rkey(r)] = r; });
   var nos = function (kind) { return Object.keys(pick).filter(function (k) { return pick[k] === kind && byId[k]; }).map(function (k) { return byId[k].no; }).sort(function (a, b) { return a - b; }); };
   var d = nos("done"), u = nos("undo");
   var tag = "\n#" + listSig(rows);
@@ -148,11 +151,20 @@ function load() {
   banner(rows.length ? "最新の一覧を確認中…（このままチェックして送れます）" : "");
   fetchList(1).then(function (j) {
     if (!j.ok) { banner("一覧を読めませんでした（" + (j.error || "") + "）", true); return; }
-    var changed = rows.length && listSig(j.rows) !== listSig(rows);
+    // 番号と題名の並びが変わったときだけ「一覧が新しくなりました」と出す
+    var nsig = function (rs) { return rs.filter(function (r) { return r.level > 0; }).map(function (r) { return r.no + ":" + r.title; }).join("|"); };
+    var changed = rows.length && nsig(j.rows) !== nsig(rows);
+    var old = {}; rows.forEach(function (r) { if (r.level > 0) old[rkey(r)] = r; });
     rows = j.rows; fresh = true;
-    // 選んだものは、同じタスクなら残す（番号が変わっても）。もう反映済みの選択は外す
-    var byId = {}; rows.forEach(function (r) { if (r.level > 0) byId[r.id] = r; });
-    Object.keys(pick).forEach(function (k) { if (!byId[k] || (pick[k] === "done") === !!byId[k].done) delete pick[k]; });
+    // 選んだものは、同じタスクなら残す（番号が変わっても・前回の一覧にIDが無くても題名で引き継ぐ）。もう反映済みの選択は外す
+    var byId = {}; rows.forEach(function (r) { if (r.level > 0) byId[rkey(r)] = r; });
+    var np = {};
+    Object.keys(pick).forEach(function (k) {
+      var nr = byId[k];
+      if (!nr && old[k]) nr = rows.filter(function (x) { return x.level > 0 && x.title === old[k].title; })[0];
+      if (nr && (pick[k] === "done") !== !!nr.done) np[rkey(nr)] = pick[k];
+    });
+    pick = np;
     document.getElementById("test").style.display = j.test ? "block" : "none";
     try { localStorage.setItem("todo_cache", JSON.stringify(j)); } catch (e) {}
     banner(changed ? "一覧が新しくなりました（番号が変わっています）" : "");
