@@ -32,7 +32,7 @@
   button:disabled { background:#cfcfcf; }
   .msg { text-align:center; color:var(--muted); font-size:14px; padding:40px 0; }
   .test { background:#fff4d6; color:#8a6d00; font-size:12px; padding:6px 10px; border-radius:6px; margin-top:6px; }
-  .stale { opacity:.4; pointer-events:none; }
+  .stale { opacity:.4; }
   .test a { color:#8a6d00; font-weight:bold; }
 </style>
 </head>
@@ -93,12 +93,15 @@ function draw() {
   var nd = Object.keys(pick).filter(function (k) { return pick[k] === "done"; }).length;
   var nu = Object.keys(pick).filter(function (k) { return pick[k] === "undo"; }).length;
   var b = document.getElementById("send");
-  b.disabled = !(nd || nu);
-  b.textContent = (nd || nu) ? ("✅ まとめて完了（" + nd + "件）" + (nu ? "・取り消し " + nu + "件" : "")) : "チェックしてください";
+  b.disabled = !fresh || !(nd || nu);
+  b.textContent = !fresh ? "最新の一覧を読み込み中…" : (nd || nu) ? ("✅ まとめて完了（" + nd + "件）" + (nu ? "・取り消し " + nu + "件" : "")) : "チェックしてください";
+  document.getElementById("list").classList.toggle("stale", !fresh);
 }
 
 document.getElementById("list").addEventListener("click", function (ev) {
   var el = ev.target.closest(".row"); if (!el) return;
+  // 最新の一覧を取り終えるまでは押せない（前回の一覧のままだと、LINEの外で完了にした物も⬜に見えるため・2026-10-23）
+  if (!fresh) { banner("最新の一覧を読み込み中です。読み込み終わってから押してください"); return; }
   var id = el.dataset.id;
   var r = rows.filter(function (x) { return x.level > 0 && rkey(x) === id; })[0]; if (!r) return;
   if (pick[id]) delete pick[id];
@@ -148,7 +151,7 @@ function load() {
   // 前回の一覧をすぐ出して、そのままチェックできる。裏で最新を取り直す
   try { var c = JSON.parse(localStorage.getItem("todo_cache") || "null"); if (c && c.rows && !rows.length) rows = c.rows; } catch (e) {}
   if (rows.length) draw();
-  banner(rows.length ? "最新の一覧を確認中…（このままチェックして送れます）" : "");
+  banner(rows.length ? "最新の一覧を読み込み中…（前回の一覧を薄く出しています）" : "");
   fetchList(1).then(function (j) {
     if (!j.ok) { banner("一覧を読めませんでした（" + (j.error || "") + "）", true); return; }
     // 番号と題名の並びが変わったときだけ「一覧が新しくなりました」と出す
@@ -170,7 +173,7 @@ function load() {
     banner(changed ? "一覧が新しくなりました（番号が変わっています）" : "");
     draw();
   }).catch(function () {
-    banner(rows.length ? "最新を確認できませんでした。このまま送れます（一覧が古ければ反映せずにお知らせします）" : "一覧を読めませんでした。電波のよい所で、もう一度読み込んでください", true);
+    banner("最新の一覧を読めませんでした。電波のよい所で、もう一度読み込んでください", true);
     if (!rows.length) document.getElementById("list").innerHTML = '<div class="msg">一覧を読めませんでした</div>';
   });
 }
